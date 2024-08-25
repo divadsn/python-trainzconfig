@@ -59,14 +59,14 @@ class Kuid:
         Returns:
             bytes: The byte sequence representing the KUID.
         """
-        ubytes = struct.pack('<I', self.author_id)
-        cbytes = struct.pack('<I', self.base_id)
+        ubytes = struct.pack("<i", self.author_id)
+        cbytes = struct.pack("<i", self.base_id)
 
         if self.is_kuid2 and 0 < self.version < 128 and self.author_id >= 0:
             ubytes = ubytes[:3] + bytes([ubytes[3] | (self.version << 1)])
 
         return ubytes + cbytes
-    
+
     def __eq__(self, other: object) -> bool:
         """
         Compares two KUID objects for equality.
@@ -117,19 +117,7 @@ class Kuid:
         Returns:
             str: The computed hash string for the KUID.
         """
-        def compute_hash(kuid_bytes):
-            hash_val = 0x00
-
-            for i in range(8):
-                hash_val ^= kuid_bytes[i]
-
-            if (kuid_bytes[3] & (1 << 0)) == 0:
-                hash_val ^= kuid_bytes[3]
-
-            return hash_val
-
-        # Compute and return the hash as a byte
-        return f"hash-{compute_hash(bytes(self)):02X}"
+        return f"hash-{Kuid.compute_hash(bytes(self)):02X}"
     
     def kuid(self) -> str:
         """
@@ -148,6 +136,18 @@ class Kuid:
             str: The KUID string in the kuid2 format.
         """
         return f"kuid2:{self.author_id}:{self.base_id}:{self.version}"
+
+    @staticmethod
+    def compute_hash(kuid_bytes) -> int:
+        hash_val = 0x00
+
+        for i in range(8):
+            hash_val ^= kuid_bytes[i]
+
+        if (kuid_bytes[3] & (1 << 0)) == 0:
+            hash_val ^= kuid_bytes[3]
+
+        return hash_val
 
 
 class TrainzConfig:
