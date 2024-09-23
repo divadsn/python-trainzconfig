@@ -1,6 +1,9 @@
 import re
 import struct
 
+from pathlib import Path
+from typing_extensions import Self
+
 __all__ = ["Kuid", "TrainzConfig"]
 
 
@@ -9,30 +12,30 @@ class Kuid:
     A class representing a KUID (Kuid or Kuid2) used in Trainz.
 
     Attributes:
-        author_id (int): The author ID part of the KUID.
-        base_id (int): The base asset ID part of the KUID.
+        user_id (int): The user ID part of the KUID.
+        content_id (int): The content ID part of the KUID.
         version (int): The version number (only for Kuid2).
     """
 
-    def __init__(self, value: str):
+    def __init__(self, user_id: int, content_id: int, version: int = 0):
         """
-        Initializes a Kuid object by parsing the given KUID string.
+        Initializes a Kuid object.
 
         Args:
-            value (str): The KUID string, which can be in the kuid or kuid2 format.
+            user_id (int): The user ID part of the KUID.
+            content_id (int): The content ID part of the KUID.
+            version (int): The version number (only for Kuid2), must be between 0 and 128.
 
         Raises:
-            AssertionError: If the provided KUID string is not valid.
+            ValueError: If the version is not between 0 and 128.
         """
-        if value.startswith("<") and value.endswith(">"):
-            value = value[1:-1]
+        self.user_id = user_id
+        self.content_id = content_id
 
-        assert re.match(r"^(?:kuid:-?\d+:\d+|kuid2:-?\d+:\d+:\d+)$", value, re.IGNORECASE), f"Invalid KUID: {value}"
-        parts = value.split(":")
+        if not 0 <= version < 128:
+            raise ValueError("Version must be between 0 and 128.")
 
-        self.author_id = int(parts[1])
-        self.base_id = int(parts[2])
-        self.version = int(parts[3]) if len(parts) > 3 else 0
+        self.version = version
 
     def __repr__(self) -> str:
         """
@@ -59,10 +62,10 @@ class Kuid:
         Returns:
             bytes: The byte sequence representing the KUID.
         """
-        ubytes = struct.pack("<i", self.author_id)
-        cbytes = struct.pack("<i", self.base_id)
+        ubytes = struct.pack("<i", self.user_id)
+        cbytes = struct.pack("<i", self.content_id)
 
-        if self.is_kuid2 and 0 < self.version < 128 and self.author_id >= 0:
+        if self.is_kuid2 and 0 < self.version < 128 and self.user_id >= 0:
             ubytes = ubytes[:3] + bytes([ubytes[3] | (self.version << 1)])
 
         return ubytes + cbytes
@@ -80,7 +83,7 @@ class Kuid:
         if not isinstance(other, Kuid):
             return NotImplemented
 
-        return self.author_id == other.author_id and self.base_id == other.base_id and self.version == other.version
+        return self.user_id == other.user_id and self.content_id == other.content_id and self.version == other.version
 
     def __hash__(self) -> int:
         """
@@ -89,7 +92,16 @@ class Kuid:
         Returns:
             int: The hash value for the KUID.
         """
-        return hash((self.author_id, self.base_id, self.version))
+        return hash((self.user_id, self.content_id, self.version))
+
+    def __reversed__(self) -> Self:
+        """
+        Returns a reversed KUID object.
+
+        Returns:
+            Kuid: A new Kuid object with the user ID and content ID swapped.
+        """
+        return Kuid(self.content_id, self.user_id, self.version)
 
     @property
     def is_kuid2(self) -> bool:
@@ -99,7 +111,7 @@ class Kuid:
         Returns:
             bool: True if the KUID is of type kuid2, False otherwise.
         """
-        return self.version > 0
+        return self.user_id > 0 and self.version > 0
 
     def hex(self) -> str:
         """
@@ -108,7 +120,7 @@ class Kuid:
         Returns:
             str: The hex string representing the KUID, in uppercase.
         """
-        return bytes(self).hex().upper()
+        return bytes(self).hex(" ").upper()
 
     def hash(self) -> str:
         """
@@ -118,27 +130,48 @@ class Kuid:
             str: The computed hash string for the KUID.
         """
         return f"hash-{Kuid.compute_hash(bytes(self)):02X}"
-    
+
     def kuid(self) -> str:
         """
-        Returns the KUID in 'kuid:<author_id>:<base_id>' format.
+        Returns the KUID in 'kuid:<user_id>:<content_id>' format.
 
         Returns:
             str: The KUID string in the kuid format.
         """
-        return f"kuid:{self.author_id}:{self.base_id}"
+        return f"kuid:{self.user_id}:{self.content_id}"
 
     def kuid2(self) -> str:
         """
-        Returns the KUID in 'kuid2:<author_id>:<base_id>:<version>' format.
+        Returns the KUID in 'kuid2:<user_id>:<content_id>:<version>' format.
 
         Returns:
             str: The KUID string in the kuid2 format.
         """
-        return f"kuid2:{self.author_id}:{self.base_id}:{self.version}"
+        return f"kuid2:{self.user_id}:{self.content_id}:{self.version}"
+
+    def local_path(self, trainz_path: Path) -> Path:
+        """
+        Returns the local path for the KUID in the Trainz installation.
+
+        Args:
+            trainz_path (Path): The path to the Trainz installation.
+
+        Returns:
+            Path: The local path for the KUID in the Trainz installation.
+        """
+        return trainz_path / "UserData" / "local" / self.hash() / str(self).replace(":", " ").replace("-", "_")
 
     @staticmethod
-    def compute_hash(kuid_bytes) -> int:
+    def compute_hash(kuid_bytes: bytes) -> int:
+        """
+        Computes the hash value for a KUID byte sequence.
+
+        Args:
+            kuid_bytes (bytes): The byte sequence representing the KUID.
+
+        Returns:
+            int: The computed hash value for the KUID.
+        """
         hash_val = 0x00
 
         for i in range(8):
@@ -148,6 +181,86 @@ class Kuid:
             hash_val ^= kuid_bytes[3]
 
         return hash_val
+
+    @classmethod
+    def from_string(cls, kuid: str) -> Self:
+        """
+        Creates a Kuid object from a string representation of a KUID.
+
+        Args:
+            kuid (str): The string representation of the KUID.
+
+        Returns:
+            Kuid: The resulting Kuid object.
+
+        Raises:
+            ValueError: If the string representation is invalid.
+        """
+        if kuid.startswith("<") and kuid.endswith(">"):
+            kuid = kuid[1:-1]
+
+        if not re.match(r"^(?:kuid:-?\d+:\d+|kuid2:-?\d+:\d+:\d+)$", kuid, re.IGNORECASE):
+            raise ValueError(f"Invalid KUID string: {kuid}")
+
+        parts = kuid.split(":")[1:]
+        user_id, content_id = map(int, parts[:2])
+        version = 0
+
+        if len(parts) == 3:
+            version = int(parts[2])
+
+        return cls(user_id, content_id, version)
+
+    @classmethod
+    def from_hex(cls, hex_kuid: str, reverse: bool = False) -> Self:
+        """
+        Creates a Kuid object from a hexadecimal representation of a KUID.
+
+        Args:
+            hex_kuid (str): The hex string representing the KUID.
+            reverse (bool): Whether the user ID and content ID should be swapped.
+
+        Returns:
+            Kuid: The resulting Kuid object.
+
+        Raises:
+            ValueError: If the hex string is not valid.
+        """
+        try:
+            return cls.from_bytes(bytes.fromhex(hex_kuid), reverse)
+        except ValueError as e:
+            raise ValueError(f"Invalid hex string: {hex_kuid}") from e
+
+    @classmethod
+    def from_bytes(cls, kuid_bytes: bytes, reverse: bool = False) -> Self:
+        """
+        Creates a Kuid object from a byte sequence representing a KUID.
+
+        Args:
+            kuid_bytes (bytes): The byte sequence representing the KUID.
+            reverse (bool): Whether the user ID and content ID should be swapped.
+
+        Returns:
+            Kuid: The resulting Kuid object.
+
+        Raises:
+            ValueError: If the byte sequence is not valid.
+        """
+        if len(kuid_bytes) != 8:
+            raise ValueError("The byte sequence must be exactly 8 bytes long.")
+
+        if reverse:
+            kuid_bytes = kuid_bytes[4:] + kuid_bytes[:4]
+
+        user_id = struct.unpack("<i", kuid_bytes[:4])[0]
+        content_id = struct.unpack("<i", kuid_bytes[4:])[0]
+        version = 0
+
+        if kuid_bytes[3] & 0x01 == 0:
+            user_id &= 0x00FFFFFF
+            version = (kuid_bytes[3] >> 1) & 0x7F
+
+        return cls(user_id, content_id, version)
 
 
 class TrainzConfig:
