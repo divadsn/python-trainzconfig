@@ -2,6 +2,7 @@ import re
 import struct
 
 from pathlib import Path
+from typing import Any, List, Union, Optional, TextIO
 from typing_extensions import Self
 
 __all__ = ["Kuid", "TrainzConfig"]
@@ -24,16 +25,16 @@ class Kuid:
         Args:
             user_id (int): The user ID part of the KUID.
             content_id (int): The content ID part of the KUID.
-            version (int): The version number (only for Kuid2), must be between 0 and 128.
+            version (int): The version number (only for Kuid2), must be between 0 and 127.
 
         Raises:
-            ValueError: If the version is not between 0 and 128.
+            ValueError: If the version is not between 0 and 127.
         """
         self.user_id = user_id
         self.content_id = content_id
 
         if not 0 <= version < 128:
-            raise ValueError("Version must be between 0 and 128.")
+            raise ValueError("Version must be between 0 and 127.")
 
         self.version = version
 
@@ -113,14 +114,14 @@ class Kuid:
         """
         return self.user_id > 0 and self.version > 0
 
-    def hex(self) -> str:
+    def hex(self, *args, **kwargs) -> str:
         """
         Returns the hexadecimal representation of the KUID as an 8-byte string.
 
         Returns:
             str: The hex string representing the KUID, in uppercase.
         """
-        return bytes(self).hex(" ").upper()
+        return bytes(self).hex(*args, **kwargs).upper()
 
     def hash(self) -> str:
         """
@@ -212,26 +213,6 @@ class Kuid:
         return cls(user_id, content_id, version)
 
     @classmethod
-    def from_hex(cls, hex_kuid: str, reverse: bool = False) -> Self:
-        """
-        Creates a Kuid object from a hexadecimal representation of a KUID.
-
-        Args:
-            hex_kuid (str): The hex string representing the KUID.
-            reverse (bool): Whether the user ID and content ID should be swapped.
-
-        Returns:
-            Kuid: The resulting Kuid object.
-
-        Raises:
-            ValueError: If the hex string is not valid.
-        """
-        try:
-            return cls.from_bytes(bytes.fromhex(hex_kuid), reverse)
-        except ValueError as e:
-            raise ValueError(f"Invalid hex string: {hex_kuid}") from e
-
-    @classmethod
     def from_bytes(cls, kuid_bytes: bytes, reverse: bool = False) -> Self:
         """
         Creates a Kuid object from a byte sequence representing a KUID.
@@ -262,13 +243,32 @@ class Kuid:
 
         return cls(user_id, content_id, version)
 
+    @classmethod
+    def from_hex(cls, hex_kuid: str, reverse: bool = False) -> Self:
+        """
+        Creates a Kuid object from a hexadecimal representation of a KUID.
+
+        Args:
+            hex_kuid (str): The hex string representing the KUID.
+            reverse (bool): Whether the user ID and content ID should be swapped.
+
+        Returns:
+            Kuid: The resulting Kuid object.
+
+        Raises:
+            ValueError: If the hex string is not valid.
+        """
+        try:
+            kuid_bytes = bytes.fromhex(hex_kuid)
+        except ValueError as e:
+            raise ValueError(f"Invalid hex string: {hex_kuid}") from e
+
+        return cls.from_bytes(kuid_bytes, reverse)
+
 
 class TrainzConfig:
-    def __init__(self, filename, encoding="utf-8-sig"):
+    def __init__(self, filename: Path, encoding: str = "utf-8-sig"):
         self.config_data = {}
-
-        path = []
-        previous_key = None
 
         if encoding == "auto":
             try:
@@ -277,8 +277,14 @@ class TrainzConfig:
             except ModuleNotFoundError as e:
                 raise e
 
-        with open(filename, "r", encoding=encoding) as f:
-            for line in f.readlines():
+        self.load(filename, encoding)
+
+    def load(self, filename: Path, encoding: str = "utf-8-sig"):
+        path = []
+        previous_key = None
+
+        with open(filename, "r", encoding=encoding) as file_handle:
+            for line in file_handle:
                 line = line.strip()
 
                 if not line or line.startswith(";"):
@@ -286,6 +292,7 @@ class TrainzConfig:
 
                 split_line = line.split(maxsplit=1)
 
+                # Handle nested structures
                 if len(split_line) == 1:
                     if split_line[0] == "{":
                         path.append(previous_key)
@@ -295,19 +302,21 @@ class TrainzConfig:
                         previous_key = split_line[0]
                     continue
 
-                key = split_line[0]
-                value = split_line[1]
+                key, value = split_line
 
+                # Match different types of values
                 if re.match(r'^".*"$', value):
                     value = value[1:-1]
                 elif re.match(r'^<.*>$', value):
-                    value = Kuid(value)
+                    value = Kuid.from_string(value) if value.lower() != "<null>" else None
                 elif re.match(r"^[-+]?([0-9]*[.])[0-9]+$", value):
                     value = float(value)
                 elif re.match(r"^[-+]?\d+$", value):
                     value = int(value)
                 elif "," in value:
-                    value = value.split(",")
+                    value = self.parse_array(value)
+                elif value.startswith('"') and not value.endswith('"'):
+                    value = self.parse_multiline_string(file_handle, value)
 
                 container = self.config_data
 
@@ -319,7 +328,36 @@ class TrainzConfig:
 
                 container[key] = value
 
-    def get(self, path, default=None):
+    @staticmethod
+    def parse_array(value: str) -> List[Union[int, float, str]]:
+        array = []
+
+        for item in map(str.strip, value.split(",")):
+            if re.match(r"^[-+]?([0-9]*[.])[0-9]+$", item):
+                item = float(item)
+            elif re.match(r"^[-+]?\d+$", item):
+                item = int(item)
+
+            array.append(item)
+
+        return array
+
+    @staticmethod
+    def parse_multiline_string(file_handle: TextIO, current_line: str) -> str:
+        multi_line_value = current_line[1:]  # Skip the initial quote
+
+        for line in file_handle:
+            stripped_line = line.strip()
+
+            if stripped_line.endswith('"'):
+                multi_line_value += "\n" + stripped_line[:-1]  # Skip the closing quote
+                break
+            else:
+                multi_line_value += "\n" + stripped_line
+
+        return multi_line_value
+
+    def get(self, path: str, default: Optional[Any] = None) -> Optional[Any]:
         path = path.split(".")
         container = self.config_data
 
@@ -330,6 +368,18 @@ class TrainzConfig:
             container = container[p]
 
         return container
+
+    def set(self, path: str, value: Any):
+        path = path.split(".")
+        container = self.config_data
+
+        for p in path[:-1]:
+            if p not in container:
+                container[p] = {}
+
+            container = container[p]
+
+        container[path[-1]] = value
 
     @property
     def kuid(self) -> str:
